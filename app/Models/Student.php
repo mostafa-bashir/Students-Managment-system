@@ -18,7 +18,6 @@ class Student extends Model
         'Address',
         'fatherName',
         'fatherPhone',
-        'Status'
     ];
 
     // Define relationships

@@ -19,11 +19,10 @@ class CreateStudentsTable extends Migration
             $table->string('Phone', 50);
             $table->date('Birth', 50);
             $table->string('Gender', 10);
-            $table->string('Class', 50);
+            $table->string('Class', 50)->nullable();
             $table->string('Address', 100);
             $table->string('fatherName', 100);
             $table->string('fatherPhone', 50);
-            $table->string('Status', 50);
             $table->timestamps();
         });
     }

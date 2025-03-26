@@ -9,8 +9,11 @@ use App\Models\Student;
 use App\Models\Teacher;
 use App\Models\Classlist;
 use App\Models\Attendance;
+use App\Models\Session;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Response;
+use Illuminate\Support\Str;
+
 
 class adminController extends Controller
 {
@@ -53,75 +56,84 @@ class adminController extends Controller
     public function attendList(Request $request)
     {
         // Validate required query parameters
-        if (!$request->has('classDate') || !$request->has('className')) {
-            return redirect()->back()->with('error', 'Class date and class name are required.');
-        }
-    
-        $className = $request->className;
-        $date = $request->classDate;
-    
-        // Fetch the class ID based on the class name
-        $class = ClassList::where('className', $className)->first();
-    
-        if (!$class) {
-            return redirect()->back()->with('error', 'Class not found.');
-        }
-    
-        // Fetch all students (not filtered by class)
-        $allStudents = Student::all();
-    
-        // Fetch student IDs who have an attendance record with 'attendance = attend' for the given date and specific class
-        $attendedStudentIds = Attendance::where('class_id', $class->id) // Filter by specific class
-            ->where('date', $date)
-            ->where('attendance', 'attend')
-            ->pluck('student_id')
-            ->toArray();
-    
-        // Filter out students who have already been marked as 'attend' in the specific class on the given date
-        $filteredStudents = $allStudents->reject(function ($student) use ($attendedStudentIds) {
-            return in_array($student->id, $attendedStudentIds);
-        });
-    
-        // Handle search functionality
-        $searchQuery = $request->query('search');
-        if ($searchQuery) {
-            $filteredStudents = $filteredStudents->filter(function ($student) use ($searchQuery) {
-                return stripos($student->Name, $searchQuery) !== false;
-            });
-        }
-    
-        // Pass data to the view
-        $data['students'] = $filteredStudents;
-        $data['date'] = $date;
-        $data['classid'] = $class->id;
-    
-        return view('admin.attendance.studentList', $data);
-    }
-
-    public function saveAttendance(Request $request){
         $validator = Validator::make($request->all(), [
-            'attendance' => 'required',
-            'date' => 'required',
-            'classid' => 'required|exists:classlists,id' // Validate classid
+            'classDate' => 'required|date',
+            'className' => 'required|exists:classlists,className'
         ]);
-    
+
         if ($validator->fails()) {
             return redirect()->back()->withErrors($validator)->withInput();
         }
-    
-        $date = $request->date;
-        $classid = $request->classid; // Get classid from the request
-        $attendance = json_decode($request->attendance, true);
-    
-        foreach ($attendance as $studentId => $status) {
-            Attendance::create([
-                'student_id' => $studentId,
-                'attendance' => $status,
-                'date' => $date,
-                'class_id' => $classid // Include classid in the attendance record
-            ]);
+
+        $className = $request->className;
+        $date = $request->classDate;
+
+        // Fetch the class
+        $class = Classlist::where('className', $className)->first();
+
+        // Get students in this class
+        $students = Student::where('Class', $className)->get();
+
+        // Get attendance records for this date and class
+        $attendanceRecords = Attendance::where('class_id', $class->id)
+            ->where('date', $date)
+            ->get()
+            ->keyBy('student_id');
+
+        // Prepare student data with attendance status
+        $studentData = [];
+        foreach ($students as $student) {
+            $studentData[] = [
+                'id' => $student->id,
+                'name' => $student->Name,
+                'phone' => $student->Phone,
+                'status' => $attendanceRecords->has($student->id) ? $attendanceRecords[$student->id]->attendance : 'Not Marked'
+            ];
         }
-    
+
+        // Handle search
+        if ($request->has('search')) {
+            $search = strtolower($request->search);
+            $studentData = array_filter($studentData, function($student) use ($search) {
+                return strpos(strtolower($student['name']), $search) !== false;
+            });
+        }
+
+        return view('admin.attendance.studentList', [
+            'students' => $studentData,
+            'date' => $date,
+            'classid' => $class->id,
+            'className' => $className
+        ]);
+    }
+
+    public function saveAttendance(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'attendance' => 'required|array',
+            'date' => 'required|date',
+            'classid' => 'required|exists:classlists,id'
+        ]);
+
+        if ($validator->fails()) {
+            return redirect()->back()->withErrors($validator)->withInput();
+        }
+
+        $date = $request->date;
+        $classid = $request->classid;
+        $attendanceData = $request->attendance;
+
+        foreach ($attendanceData as $studentId => $status) {
+            Attendance::updateOrCreate(
+                [
+                    'student_id' => $studentId,
+                    'class_id' => $classid,
+                    'date' => $date
+                ],
+                ['attendance' => $status]
+            );
+        }
+
         return redirect()->route('admin.attendance')->with('success', 'Attendance Saved Successfully');
     }
 
@@ -216,13 +228,168 @@ class adminController extends Controller
     }
 
     // student area 
-    public function students(){
-        $data['students'] = Student::get();
+    public function students(Request $request)
+    {
+        $query = Student::query();
+        
+        if ($request->has('search')) {
+            $search = $request->input('search');
+            $normalizedSearch = $this->normalizeArabic($search);
+            
+            $query->where(function($q) use ($normalizedSearch) {
+                $q->whereRaw("REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(Name, 'أ', 'ا'), 'إ', 'ا'), 'آ', 'ا'), 'ى', 'ي'), 'ة', 'ه'), 'ئ', 'ي'), 'ؤ', 'و'), 'ـ', '') LIKE ?", ["%{$normalizedSearch}%"])
+                ->orWhere('Phone', 'LIKE', "%{$normalizedSearch}%");
+            });
+        }
+
+        $data['students'] = $query->paginate(10);
         return view('admin.student.studentList', $data);
+    }
+
+    protected function normalizeArabic($text)
+    {
+        // Convert all variants to simple letters
+        $replacements = [
+            'أ' => 'ا', 'إ' => 'ا', 'آ' => 'ا', 'ٱ' => 'ا', 'ꙇ' => 'ا',
+            'ى' => 'ي', 'ئ' => 'ي', 'ٸ' => 'ي', 'ۍ' => 'ي', 'ێ' => 'ي',
+            'ة' => 'ه', 'ۀ' => 'ه', 'ہ' => 'ه', 'ۃ' => 'ه',
+            'ؤ' => 'و', 'ٶ' => 'و', 'ۄ' => 'و', 'ۊ' => 'و',
+            'ـ' => '', 'ّ' => '', // Remove tatweel and shadda
+        ];
+        
+        // Normalize characters
+        $normalized = str_replace(array_keys($replacements), array_values($replacements), $text);
+        
+        // Remove all remaining diacritics (harakat)
+        $normalized = preg_replace('/[\x{064B}-\x{065F}]/u', '', $normalized);
+        
+        return $normalized;
     }
     public function studentAdd(){
         $data['class'] = ClassList::select('className')->get();
         return view('admin.student.addStudent', $data);
+    }
+
+
+    public function quickAdd(Request $request)
+    {
+        // Validate the request data
+        $validated = $request->validate([
+            'Name' => 'required|string|max:255',
+            'Phone' => 'required|string|max:20',
+            'Birth' => 'required|date',
+            'Gender' => 'required|string|in:Male,Female',
+            'Address' => 'required|string',
+            'fatherName' => 'required|string|max:255',  // Match form field name
+            'fatherPhone' => 'required|string|max:20',  // Match form field name
+            'session_id' => 'required|exists:sessions,id',
+            'class_id' => 'nullable'  // Add if using classes
+        ]);
+
+        // Create the student
+        $student = Student::create([
+            'Name' => $validated['Name'],
+            'Phone' => $validated['Phone'],
+            'Birth' => $validated['Birth'],
+            'Gender' => $validated['Gender'],
+            'Address' => $validated['Address'],
+            'fatherName' => $validated['fatherName'],  // Match form field name
+            'fatherPhone' => $validated['fatherPhone'],  // Match form field name
+            // 'ClassID' => $validated['class_id'] ?? null  // Add if using classes
+        ]);
+        
+        // Mark as present for this session
+        // Attendance::create([
+        //     'session_id' => $validated['session_id'],
+        //     'student_id' => $student->id,
+        //     'class_id' =>  $validated['class_id'],
+        //     'attendance' => 'attend'
+        // ]);
+
+        return response()->json([
+            'success' => true,
+            'student' => $student
+        ]);
+    }
+    public function importStudents(Request $request)
+    {
+        $request->validate([
+            'student_csv' => 'required|file|mimes:csv,txt|max:2048' // 2MB max
+        ]);
+    
+        $file = $request->file('student_csv');
+        $csvData = array_map('str_getcsv', file($file->getRealPath()));
+        
+        $imported = 0;
+        $errors = [];
+        $headerSkipped = false;
+    
+        foreach ($csvData as $key => $row) {
+            // Skip completely empty rows
+            if (count(array_filter($row)) === 0) {
+                continue;
+            }
+    
+            // Skip header row if present (we'll assume first row might be headers)
+            if (!$headerSkipped && $key === 0) {
+                $headerSkipped = true;
+                continue;
+            }
+    
+            // Ensure minimum required fields
+            if (count($row) < 3) {
+                $errors[] = "Row ".($key+1).": Insufficient data (needs at least Name, Phone, Address)";
+                continue;
+            }
+    
+            $validator = Validator::make([
+                'Name' => trim($row[0] ?? ''),
+                'Phone' => trim($row[1] ?? ''),
+                'Address' => trim($row[2] ?? ''),
+                'fatherName' => trim($row[3] ?? ''),
+                'fatherPhone' => trim($row[4] ?? '')
+            ], [
+                'Name' => 'required|string|max:255',
+                'Phone' => 'required|string|max:20|unique:students,Phone',
+                'Address' => 'required|string|max:255',
+                'fatherName' => 'nullable|string|max:255',
+                'fatherPhone' => 'nullable|string|max:20'
+            ]);
+    
+            if ($validator->fails()) {
+                $errors[] = "Row ".($key+1).": ".implode(', ', $validator->errors()->all());
+                continue;
+            }
+    
+            try {
+                Student::create([
+                    'Name' => $row[0],
+                    'Phone' => $row[1],
+                    'Address' => $row[2],
+                    'Birth' => $row[3] ?? null,
+                    'Gender' => $row[4] ?? null,
+                    'fatherName' =>  $row[5] ?? null,
+                    'fatherPhone' =>  $row[6] ?? null,
+                    'Status' => 'active',
+                    // Add any other default fields
+                ]);
+                $imported++;
+            } catch (\Exception $e) {
+                $errors[] = "Row ".($key+1).": Error saving student - ".$e->getMessage();
+            }
+        }
+    
+        $message = $imported > 0 
+            ? "Successfully imported $imported students" 
+            : "No students were imported";
+        
+        if (!empty($errors)) {
+            $message .= " with ".count($errors)." errors";
+        }
+    
+        return back()
+            ->with('import_message', $message)
+            ->with('import_errors', $errors);
     }
     public function studentAdded(Request $request){
         
@@ -430,8 +597,10 @@ class adminController extends Controller
 
     // classlist area 
 
-    public function classList(){
-        $data['classList'] = Classlist::all(); 
+    public function classList()
+    {
+        $data = [];
+        $data['classList'] = Classlist::withCount('sessions')->get(); 
         return view('admin.class.classList', $data);
     }
     public function classDetails($id){
@@ -540,31 +709,159 @@ class adminController extends Controller
     // showing the attendance of the student
     public function viewAttendance($studentId)
     {
-        // Fetch the student
-        $student = Student::findOrFail($studentId);
+        $student = Student::with(['class', 'attendances'])->findOrFail($studentId);
+        
+        // Get all attendance records for this student with class information
+        $attendanceRecords = Attendance::where('student_id', $studentId)
+            ->with('class')
+            ->get()
+            ->groupBy('class_id');
 
-        // Fetch all classes
-        $classes = ClassList::all();
-
-        // Fetch attendance records for the student
-        $attendances = Attendance::where('student_id', $studentId)->get()->keyBy('class_id');
-
-        // Prepare data for the view
+        // Prepare attendance data by class
         $attendanceData = [];
-        foreach ($classes as $class) {
+        foreach ($attendanceRecords as $classId => $records) {
+            $class = $records->first()->class;
+            
             $attendanceData[] = [
-                'class_id' => $class->id,
+                'class_id' => $classId,
                 'class_name' => $class->className,
-                'attendance_status' => $attendances->has($class->id) ? $attendances[$class->id]->attendance : 'Not Recorded',
-                'date' => $attendances->has($class->id) ? $attendances[$class->id]->date : 'N/A', // Include attendance date
+                'total_days' => $records->count(),
+                'present_days' => $records->where('attendance', 'attend')->count(),
+                'absent_days' => $records->where('attendance', 'absend')->count(),
+                'attendance_rate' => $records->count() > 0 
+                    ? round(($records->where('attendance', 'attend')->count() / $records->count()) * 100, 2)
+                    : 0
             ];
         }
 
-        // Pass data to the view
         return view('admin.student.attendance', [
             'student' => $student,
-            'attendanceData' => $attendanceData,
+            'attendanceData' => $attendanceData
         ]);
+    }
+
+
+    // Show sessions for a class
+    public function classSessions($classId)
+    {
+        $class = ClassList::findOrFail($classId);
+        $sessions = Session::where('class_id', $classId)
+                    ->orderBy('date', 'desc')
+                    ->get();
+        
+        return view('admin.class.sessions', compact('class', 'sessions'));
+    }
+
+    // Add new session
+    public function addSession(Request $request, $classId)
+    {
+        $request->validate([
+            'title' => 'required',
+            'date' => 'required|date',
+        ]);
+
+        Session::create([
+            'class_id' => $classId,
+            'title' => $request->title,
+            'date' => $request->date,
+        ]);
+
+        return back()->with('success', 'Session added successfully');
+    }
+
+    // Show attendance for a session
+    public function sessionAttendance($sessionId)
+    {
+        $session = Session::with(['class', 'attendances.student'])->findOrFail($sessionId);
+        
+        // Get ALL students (not just those in the class)
+        $allStudents = Student::all();
+        
+        // Get attendance records for this session
+        $attendances = $session->attendances->keyBy('student_id');
+        
+        return view('admin.attendance.session', [
+            'session' => $session,
+            'students' => $allStudents,  // Now passing all students
+            'attendances' => $attendances
+        ]);
+    }
+
+    // Save session attendance
+    public function saveSessionAttendance(Request $request, $sessionId)
+    {
+        $request->validate([
+            'attendance' => 'required|array',
+            'attendance.*' => 'in:attend,absent'
+        ]);
+
+        $session = Session::findOrFail($sessionId);
+
+        foreach ($request->attendance as $studentId => $status) {
+            Attendance::updateOrCreate(
+                [
+                    'student_id' => $studentId,
+                    'session_id' => $sessionId,
+                    'date' => $session->date
+                ],
+                [
+                    'attendance' => $status,
+                    'class_id' => $session->class_id
+                ]
+            );
+        }
+
+        return back()->with('success', 'Attendance saved successfully');
+    }
+
+    // Export session attendance CSV
+    public function downloadSessionAttendanceCSV($sessionId)
+    {
+        $session = Session::with(['class', 'attendances.student'])->findOrFail($sessionId);
+        
+        // Get all students with their phone and address
+        $allStudents = Student::select('id', 'Name', 'Phone', 'Address', 'Class')->get();
+        $attendances = $session->attendances->keyBy('student_id');
+
+        $headers = [
+            'Content-Type' => 'text/csv',
+            'Content-Disposition' => "attachment; filename={$session->class->className}_attendance.csv",
+        ];
+
+        $callback = function() use ($session, $allStudents, $attendances) {
+            $file = fopen('php://output', 'w');
+            
+            // CSV headers with new columns
+            fputcsv($file, [
+                'Student ID', 
+                'Name', 
+                'Phone',
+                'Address',
+                'Class', 
+                'Status', 
+                'Date'
+            ]);
+            
+            // Data rows for all students
+            foreach ($allStudents as $student) {
+                $attendance = $attendances[$student->id] ?? null;
+                $status = $attendance ? $attendance->attendance : 'absent';
+                
+                fputcsv($file, [
+                    $student->id,
+                    $student->Name,
+                    $student->Phone,          // Added phone number
+                    $student->Address,        // Added address
+                    $student->Class ?? 'Not Assigned',
+                    $status === 'attend' ? 'Present' : 'Absent',
+                    $attendance ? $attendance->date : $session->date
+                ]);
+            }
+            
+            fclose($file);
+        };
+
+        return Response::stream($callback, 200, $headers);
     }
 
 

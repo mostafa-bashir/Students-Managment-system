@@ -77,6 +77,9 @@ Route::get('/student/cal', [adminController::class, 'studentCal'])->name('admin.
 
 Route::get('/student/{id}/attendance', [adminController::class, 'viewAttendance'])->name('admin.student.attendance');
 
+Route::post('/students/import', [AdminController::class, 'importStudents'])->name('admin.students.import');
+Route::post('/students/quick-add', [AdminController::class, 'quickAdd'])->name('admin.students.quickAdd');
+
 // adminController for teacher 
 Route::get('/teacher', [adminController::class, 'teachers'])->name('admin.teachers');
 Route::get('/teacher/add', [adminController::class, 'teacherAdd'])->name('admin.teacher.add');
@@ -97,6 +100,13 @@ Route::get('/class/edit/{id}', [adminController::class, 'classEdit'])->name('adm
 Route::post('/class/update/{id}', [adminController::class, 'classUpdate'])->name('admin.class.update');
 Route::delete('/class/delete/{id}',[adminController::class, 'classDelete'])->name('admin.class.delete');
 Route::get('/class/{id}/attendance/csv', [adminController::class, 'downloadAttendanceCSV'])->name('admin.class.attendance.csv');
+
+// Session Management
+Route::get('/class/{classId}/sessions', [AdminController::class, 'classSessions'])->name('admin.class.sessions');
+Route::post('/class/{classId}/session/add', [AdminController::class, 'addSession'])->name('admin.session.add');
+Route::get('/session/{sessionId}/attendance', [AdminController::class, 'sessionAttendance'])->name('admin.session.attendance');
+Route::post('/session/{sessionId}/attendance/save', [AdminController::class, 'saveSessionAttendance'])->name('admin.session.attendance.save');
+Route::get('/session/{sessionId}/attendance/csv', [AdminController::class, 'downloadSessionAttendanceCSV'])->name('admin.session.attendance.csv');
 
 
 Route::get('/notice/cal', [NoticeController::class, 'calNotice'])->name('notice.cal');

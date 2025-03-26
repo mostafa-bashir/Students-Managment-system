@@ -22,4 +22,9 @@ class ClassList extends Model
     {
         return $this->hasMany(Attendance::class, 'class_id');
     }
+
+    public function sessions()
+{
+    return $this->hasMany(Session::class, 'class_id');
+}
 }

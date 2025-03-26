@@ -31,11 +31,11 @@
           <i class="fas fa-fw fa-chart-area"></i>
           <span>Class List</span></a>
       </li>
-    <li class="nav-item">
+    {{-- <li class="nav-item">
       <a class="nav-link" href="{{ route('admin.attendance') }}">
         <i class="fas fa-fw fa-table"></i>
         <span>Attendance</span></a>
-    </li>
+    </li> --}}
     {{-- <li class="nav-item">
       <a class="nav-link" href="{{ route('admin.library') }}">
         <i class="fas fa-book-open"></i>
